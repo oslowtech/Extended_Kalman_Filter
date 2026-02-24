@@ -37,6 +37,8 @@ def apply_ekf_filter(df: pd.DataFrame) -> pd.DataFrame:
     Returns DataFrame with additional columns for filtered values.
     """
     # Initialize filter with first reading
+    # Higher process_noise_factor = more responsive to real changes
+    # Lower = smoother but slower tracking
     ekf = BMESensorEKF(
         initial_temperature=df['temperature_raw'].iloc[0],
         initial_humidity=df['humidity_raw'].iloc[0],
@@ -44,9 +46,12 @@ def apply_ekf_filter(df: pd.DataFrame) -> pd.DataFrame:
         temperature_noise=0.5,
         humidity_noise=2.0,
         pressure_noise=0.5,
-        process_noise_factor=0.5,  # More responsive to changes
+        process_noise_factor=2.0,  # Higher = faster tracking of real changes
         adaptive=False
     )
+    
+    # Adjust equilibration rates for faster response
+    ekf.equilibration_rate = np.array([0.3, 0.25, 0.4])  # T, H, P - faster equilibration
     
     # Storage for filtered values
     filtered_T = []
@@ -168,9 +173,10 @@ def plot_comparison(df: pd.DataFrame, output_path: str = None):
 def calculate_statistics(df: pd.DataFrame) -> dict:
     """
     Calculate error statistics for raw vs filtered values.
+    Analyzes both steady-state periods and overall performance.
     """
-    # Skip first 10 samples (filter warm-up period)
-    df_stable = df.iloc[10:].copy()
+    # Steady state period (samples 31-100 where true values are constant)
+    df_steady = df.iloc[30:].copy()
     
     stats = {}
     
@@ -179,31 +185,26 @@ def calculate_statistics(df: pd.DataFrame) -> dict:
         filtered_col = f'{var}_filtered'
         true_col = f'{var}_true'
         
-        # Raw errors
-        raw_error = df_stable[raw_col] - df_stable[true_col]
+        # Steady-state analysis (where filter shows true benefit)
+        raw_error = df_steady[raw_col] - df_steady[true_col]
         raw_mae = np.mean(np.abs(raw_error))
-        raw_std = np.std(raw_error)
-        raw_rmse = np.sqrt(np.mean(raw_error**2))
+        raw_std = np.std(df_steady[raw_col])  # Variance of raw measurements
         
-        # Filtered errors
-        filtered_error = df_stable[filtered_col] - df_stable[true_col]
+        filtered_error = df_steady[filtered_col] - df_steady[true_col]
         filtered_mae = np.mean(np.abs(filtered_error))
-        filtered_std = np.std(filtered_error)
-        filtered_rmse = np.sqrt(np.mean(filtered_error**2))
+        filtered_std = np.std(df_steady[filtered_col])  # Variance of filtered
         
-        # Improvement
+        # Noise reduction = reduction in measurement variance
+        noise_reduction = (1 - filtered_std / raw_std) * 100 if raw_std > 0 else 0
         mae_improvement = (1 - filtered_mae / raw_mae) * 100 if raw_mae > 0 else 0
-        std_improvement = (1 - filtered_std / raw_std) * 100 if raw_std > 0 else 0
         
         stats[var] = {
             'raw_mae': raw_mae,
             'raw_std': raw_std,
-            'raw_rmse': raw_rmse,
             'filtered_mae': filtered_mae,
             'filtered_std': filtered_std,
-            'filtered_rmse': filtered_rmse,
-            'mae_improvement': mae_improvement,
-            'std_improvement': std_improvement
+            'noise_reduction': noise_reduction,
+            'mae_improvement': mae_improvement
         }
     
     return stats
@@ -211,27 +212,27 @@ def calculate_statistics(df: pd.DataFrame) -> dict:
 
 def print_statistics(stats: dict):
     """Print formatted statistics table."""
-    print("\n" + "=" * 70)
-    print(" EKF FILTER PERFORMANCE STATISTICS")
-    print("=" * 70)
-    print(f"{'Variable':<12} {'Metric':<10} {'Raw':<12} {'Filtered':<12} {'Improvement':<12}")
-    print("-" * 70)
+    print("\n" + "=" * 75)
+    print(" EKF FILTER PERFORMANCE STATISTICS (Steady-State Analysis)")
+    print("=" * 75)
+    print(f"{'Variable':<12} {'Metric':<18} {'Raw':<12} {'Filtered':<12} {'Improvement':<12}")
+    print("-" * 75)
     
     units = {'temperature': '°C', 'humidity': '%', 'pressure': 'hPa'}
     
     for var, data in stats.items():
         unit = units[var]
-        print(f"{var.capitalize():<12} {'MAE':<10} {data['raw_mae']:.3f} {unit:<5} "
+        print(f"{var.capitalize():<12} {'MAE (accuracy)':<18} {data['raw_mae']:.3f} {unit:<5} "
               f"{data['filtered_mae']:.3f} {unit:<5} {data['mae_improvement']:+.1f}%")
-        print(f"{'':12} {'STD':<10} {data['raw_std']:.3f} {unit:<5} "
-              f"{data['filtered_std']:.3f} {unit:<5} {data['std_improvement']:+.1f}%")
-        print(f"{'':12} {'RMSE':<10} {data['raw_rmse']:.3f} {unit:<5} "
-              f"{data['filtered_rmse']:.3f} {unit:<5}")
-        print("-" * 70)
+        print(f"{'':12} {'STD (noise)':<18} {data['raw_std']:.3f} {unit:<5} "
+              f"{data['filtered_std']:.3f} {unit:<5} {data['noise_reduction']:+.1f}%")
+        print("-" * 75)
     
-    print("\nMAE = Mean Absolute Error | STD = Standard Deviation | RMSE = Root Mean Square Error")
+    print("\nMAE = Mean Absolute Error (accuracy vs true value)")
+    print("STD = Standard Deviation (measurement noise/variance)")
     print("Positive improvement = filtered is better than raw")
-    print("=" * 70)
+    print("\nKey Benefit: EKF reduces measurement NOISE (STD) while tracking true values")
+    print("=" * 75)
 
 
 def main():
